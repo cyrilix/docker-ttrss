@@ -1,27 +1,36 @@
-FROM nginx
+FROM debian
 MAINTAINER Cyrille Nofficial<cynoffic@cyrilix.fr>
 
-LABEL version="0.1"
-LABEL description="Tiny Tiny RSS web-based news feed (RSS/Atom) reader/aggregator"
-
-RUN     apt-get update &&\
-        apt-get upgrade &&\
-        apt-get -y install php5-fpm git - php5-pgsql php5-curl php5-gd php5-json
-
-RUN  git clone https://tt-rss.org/git/tt-rss.git /opt/ttrss
+RUN DEBIAN_FRONTEND=noninteractive apt-get update && apt-get install -y \
+  nginx supervisor php-fpm php-cli php-curl php-gd php-json \
+  php-pgsql php-mysql && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 
+# add ttrss as the only nginx site
+ADD ttrss.nginx.conf /etc/nginx/sites-available/ttrss
+RUN ln -s /etc/nginx/sites-available/ttrss /etc/nginx/sites-enabled/ttrss
+RUN rm /etc/nginx/sites-enabled/default
 
-COPY php-fpm/php-fpm.conf /etc/php5/fpm/php-fpm.conf
-RUN  ln -s /opt/ttrss/config.php-dist /opt/ttrss/config.php
-RUN  adduser --system --home /opt/ttrss ttrss
-RUN  chown -R ttrss  /opt/ttrss/
+# install ttrss and patch configuration
+WORKDIR /var/www
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y curl --no-install-recommends && rm -rf /var/lib/apt/lists/* \
+    && curl -SL https://git.tt-rss.org/fox/tt-rss/archive/master.tar.gz | tar xzC /var/www --strip-components 1 \
+    && apt-get purge -y --auto-remove curl \
+    && chown www-data:www-data -R /var/www
+RUN cp config.php-dist config.php
 
+# expose only nginx HTTP port
+EXPOSE 80
 
-WORKDIR /opt/ttrss
-USER ttrss
+# complete path to ttrss
+ENV SELF_URL_PATH http://localhost
 
-EXPOSE 8080
+# expose default database credentials via ENV in order to ease overwriting
+ENV DB_NAME ttrss
+ENV DB_USER ttrss
+ENV DB_PASS ttrss
 
-
-CMD /usr/bin/php -q update.php -daemon && /usr/sbin/php5-fpm --no-php-ini --fpm-config /etc/php5/fpm/php-fpm.conf --nodaemonize
+# always re-configure database with current ENV when RUNning container, then monitor all services
+ADD configure-db.php /configure-db.php
+ADD supervisord.conf /etc/supervisor/conf.d/supervisord.conf
+CMD php /configure-db.php && supervisord -c /etc/supervisor/conf.d/supervisord.conf
